@@ -22,10 +22,12 @@ async function initializeWorker() {
       },
     })
 
-    // Optimize for LCD/LED displays
+    // Restrict recognition to numeric characters
     await worker.setParameters({
-      tessedit_char_whitelist: "0123456789.:FRTmHr/",
-      tessedit_pageseg_mode: "8", // Single word
+      // Only allow digits and a single decimal point
+      tessedit_char_whitelist: "0123456789.",
+      // Treat image as a single line of text which matches meter displays
+      tessedit_pageseg_mode: "7",
       tessedit_ocr_engine_mode: "1", // LSTM only
       preserve_interword_spaces: "0",
     })
@@ -62,20 +64,20 @@ async function processImage(imageData, options = {}) {
       status: "Processing results...",
     })
 
-    // Extract bounding boxes for visualization
-    const words = data.words || []
-    const boundingBoxes = words.map((word) => ({
-      text: word.text,
-      confidence: word.confidence,
-      bbox: word.bbox,
-    }))
+    // Extract per-digit bounding boxes and confidence
+    const symbols = data.symbols || []
+    const perDigit = symbols
+      .filter((sym) => /[0-9.]/.test(sym.text))
+      .map((sym) => ({
+        char: sym.text,
+        confidence: sym.confidence / 100,
+        bbox: sym.bbox,
+      }))
 
     return {
-      text: data.text,
-      confidence: data.confidence,
-      boundingBoxes,
-      hocr: data.hocr,
-      tsv: data.tsv,
+      rawText: data.text,
+      confidence: data.confidence / 100,
+      perDigit,
     }
   } catch (error) {
     self.postMessage({

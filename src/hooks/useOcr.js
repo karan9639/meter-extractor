@@ -2,348 +2,254 @@
 
 import { useState } from "react";
 
+// Simple utility to filter text lines according to user-defined options
+function filterTextInternal(text, filters = {}) {
+  const {
+    keywords = [],
+    patterns = [],
+    includeNumbers = true,
+    includeLetters = true,
+    includeSymbols = true,
+    minLength = 0,
+    maxLength = Number.POSITIVE_INFINITY,
+    caseSensitive = false,
+    exactMatch = false,
+    excludeKeywords = [],
+    lineFilters = {},
+  } = filters;
+
+  let lines = text
+    .split(/[\n\r]+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const results = {
+    allText: text,
+    filteredText: "",
+    matchedLines: [],
+    rejectedLines: [],
+    totalLines: lines.length,
+    matchCount: 0,
+    categories: {
+      emails: [],
+      phones: [],
+      urls: [],
+      dates: [],
+      prices: [],
+      numbers: [],
+      addresses: [],
+    },
+  };
+
+  const kw = keywords.map((k) => (caseSensitive ? k : k.toLowerCase()));
+  const exKw = excludeKeywords.map((k) => (caseSensitive ? k : k.toLowerCase()));
+
+  for (const line of lines) {
+    const cmp = caseSensitive ? line : line.toLowerCase();
+    if (line.length < minLength || line.length > maxLength) {
+      results.rejectedLines.push({ line, reason: "Length filter" });
+      continue;
+    }
+    if (!includeNumbers && /\d/.test(line)) {
+      results.rejectedLines.push({ line, reason: "Contains numbers" });
+      continue;
+    }
+    if (!includeLetters && /[a-zA-Z]/.test(line)) {
+      results.rejectedLines.push({ line, reason: "Contains letters" });
+      continue;
+    }
+    if (!includeSymbols && /[^a-zA-Z0-9\s]/.test(line)) {
+      results.rejectedLines.push({ line, reason: "Contains symbols" });
+      continue;
+    }
+    if (exKw.some((k) => (exactMatch ? cmp === k : cmp.includes(k)))) {
+      results.rejectedLines.push({ line, reason: "Excluded keyword" });
+      continue;
+    }
+    if (kw.length && !kw.some((k) => (exactMatch ? cmp === k : cmp.includes(k)))) {
+      results.rejectedLines.push({ line, reason: "Keyword filter" });
+      continue;
+    }
+    if (patterns.length && !patterns.some((p) => new RegExp(p, caseSensitive ? "" : "i").test(line))) {
+      results.rejectedLines.push({ line, reason: "Pattern filter" });
+      continue;
+    }
+    // Simple line-level filters
+    const lf = lineFilters || {};
+    if (lf.containsEmail && !/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i.test(line)) {
+      results.rejectedLines.push({ line, reason: "Line filter mismatch" });
+      continue;
+    }
+    if (lf.containsPhone && !/\d{3,}/.test(line)) {
+      results.rejectedLines.push({ line, reason: "Line filter mismatch" });
+      continue;
+    }
+    if (lf.containsUrl && !/https?:\/\//i.test(line)) {
+      results.rejectedLines.push({ line, reason: "Line filter mismatch" });
+      continue;
+    }
+    if (lf.containsDate && !/\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/.test(line)) {
+      results.rejectedLines.push({ line, reason: "Line filter mismatch" });
+      continue;
+    }
+    if (lf.containsPrice && !/\$\s*\d+/.test(line)) {
+      results.rejectedLines.push({ line, reason: "Line filter mismatch" });
+      continue;
+    }
+
+    results.matchedLines.push(line);
+  }
+
+  results.filteredText = results.matchedLines.join("\n");
+  results.matchCount = results.matchedLines.length;
+
+  // Populate simple categories
+  for (const line of results.matchedLines) {
+    const emails = line.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi);
+    if (emails) results.categories.emails.push(...emails);
+    const phones = line.match(/\+?\d[\d\s\-()]{5,}\d/g);
+    if (phones) results.categories.phones.push(...phones);
+    const urls = line.match(/https?:\/\/[^\s]+/gi);
+    if (urls) results.categories.urls.push(...urls);
+    const prices = line.match(/\$\s*\d+(?:\.\d+)?/g);
+    if (prices) results.categories.prices.push(...prices);
+    const numbers = line.match(/\b\d+(?:\.\d+)?\b/g);
+    if (numbers) results.categories.numbers.push(...numbers);
+  }
+
+  return results;
+}
+
 export function useOcr() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
 
-  // Advanced text filtering with multiple criteria
-  const filterText = (text, filters = {}) => {
-    const {
-      keywords = [],
-      patterns = [],
-      includeNumbers = true,
-      includeLetters = true,
-      includeSymbols = true,
-      minLength = 0,
-      maxLength = Number.POSITIVE_INFINITY,
-      caseSensitive = false,
-      exactMatch = false,
-      excludeKeywords = [],
-      lineFilters = {
-        containsEmail: false,
-        containsPhone: false,
-        containsUrl: false,
-        containsDate: false,
-        containsPrice: false,
-      },
-    } = filters;
+  const filterText = (text, filters = {}) => filterTextInternal(text, filters);
 
-    let lines = text
-      .split(/[\n\r]+/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+  const assessQuality = (canvas) => {
+    const ctx = canvas.getContext("2d");
+    const { width, height } = canvas;
+    const { data } = ctx.getImageData(0, 0, width, height);
+    let brightness = 0;
+    let glarePixels = 0;
+    let sharpness = 0;
+    const totalPixels = width * height;
 
-    const originalCount = lines.length;
-    const results = {
-      allText: text,
-      filteredText: "",
-      matchedLines: [],
-      rejectedLines: [],
-      totalLines: originalCount,
-      matchCount: 0,
-      categories: {
-        emails: [],
-        phones: [],
-        urls: [],
-        dates: [],
-        prices: [],
-        numbers: [],
-        addresses: [],
-      },
-    };
-
-    // Apply length filters
-    lines = lines.filter((line) => {
-      const passes = line.length >= minLength && line.length <= maxLength;
-      if (!passes)
-        results.rejectedLines.push({ line, reason: "Length filter" });
-      return passes;
-    });
-
-    // Apply character type filters
-    if (!includeNumbers) {
-      lines = lines.filter((line) => {
-        const passes = !/\d/.test(line);
-        if (!passes)
-          results.rejectedLines.push({ line, reason: "Contains numbers" });
-        return passes;
-      });
-    }
-    if (!includeLetters) {
-      lines = lines.filter((line) => {
-        const passes = !/[a-zA-Z]/.test(line);
-        if (!passes)
-          results.rejectedLines.push({ line, reason: "Contains letters" });
-        return passes;
-      });
-    }
-    if (!includeSymbols) {
-      lines = lines.filter((line) => {
-        const passes = !/[^a-zA-Z0-9\s]/.test(line);
-        if (!passes)
-          results.rejectedLines.push({ line, reason: "Contains symbols" });
-        return passes;
-      });
-    }
-
-    // Apply exclude keyword filters
-    if (excludeKeywords.length > 0) {
-      lines = lines.filter((line) => {
-        const searchText = caseSensitive ? line : line.toLowerCase();
-        const searchExcludeKeywords = caseSensitive
-          ? excludeKeywords
-          : excludeKeywords.map((k) => k.toLowerCase());
-        const passes = !searchExcludeKeywords.some((keyword) =>
-          exactMatch ? searchText === keyword : searchText.includes(keyword)
-        );
-        if (!passes)
-          results.rejectedLines.push({ line, reason: "Excluded keyword" });
-        return passes;
-      });
-    }
-
-    // Apply keyword filters
-    if (keywords.length > 0) {
-      lines = lines.filter((line) => {
-        const searchText = caseSensitive ? line : line.toLowerCase();
-        const searchKeywords = caseSensitive
-          ? keywords
-          : keywords.map((k) => k.toLowerCase());
-        const passes = searchKeywords.some((keyword) =>
-          exactMatch ? searchText === keyword : searchText.includes(keyword)
-        );
-        if (!passes)
-          results.rejectedLines.push({ line, reason: "Keyword filter" });
-        return passes;
-      });
-    }
-
-    // Apply pattern filters (regex)
-    if (patterns.length > 0) {
-      lines = lines.filter((line) => {
-        const passes = patterns.some((pattern) => {
-          try {
-            const regex = new RegExp(pattern, caseSensitive ? "g" : "gi");
-            return regex.test(line);
-          } catch (e) {
-            console.warn("[v0] Invalid regex pattern:", pattern);
-            return false;
-          }
-        });
-        if (!passes)
-          results.rejectedLines.push({ line, reason: "Pattern filter" });
-        return passes;
-      });
-    }
-
-    // Pre-compile regexes used in lineFilters/categorization
-    const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
-
-    // Supports Indian 10-digit (optionally +91) and common US formats
-    const phoneRegex =
-      /(?:\+?91[-.\s]?)?[6-9](?:\d[-.\s]?){9}|(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]*)\d{3}[-.\s]?\d{4}/g;
-
-    const urlRegex =
-      /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[A-Za-z0-9()]{1,6}\b([-A-Za-z0-9()@:%_+.~#?&//=]*)/g;
-
-    const dateRegex =
-      /\b(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}|\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2})\b/g;
-
-    // INR ₹ plus common currencies
-    const priceRegex =
-      /(?:₹\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\$\d+(?:\.\d{2})?|\d+(?:\.\d{2})?\s*(?:INR|USD|EUR|GBP|rupees?|dollars?|euros?|pounds?))/gi;
-
-    const numberRegex = /\b\d+(?:\.\d+)?\b/g;
-
-    // Apply specialized line filters and categorize (without early returns)
-    lines.forEach((line) => {
-      const emails = line.match(emailRegex);
-      if (emails) results.categories.emails.push(...emails);
-
-      const phones = line.match(phoneRegex);
-      if (phones) results.categories.phones.push(...phones);
-
-      const urls = line.match(urlRegex);
-      if (urls) results.categories.urls.push(...urls);
-
-      const dates = line.match(dateRegex);
-      if (dates) results.categories.dates.push(...dates);
-
-      const prices = line.match(priceRegex);
-      if (prices) results.categories.prices.push(...prices);
-
-      const numbers = line.match(numberRegex);
-      if (numbers) results.categories.numbers.push(...numbers);
-
-      // Decide inclusion based on selected flags
-      const wantsSomeFilter =
-        lineFilters &&
-        (lineFilters.containsEmail ||
-          lineFilters.containsPhone ||
-          lineFilters.containsUrl ||
-          lineFilters.containsDate ||
-          lineFilters.containsPrice);
-
-      let include = !wantsSomeFilter; // if no filter selected, include by default
-      if (wantsSomeFilter) {
-        include =
-          (lineFilters.containsEmail && !!emails) ||
-          (lineFilters.containsPhone && !!phones) ||
-          (lineFilters.containsUrl && !!urls) ||
-          (lineFilters.containsDate && !!dates) ||
-          (lineFilters.containsPrice && !!prices);
-      }
-
-      if (include) {
-        results.matchedLines.push(line);
-      } else {
-        results.rejectedLines.push({ line, reason: "Line filter mismatch" });
-      }
-    });
-
-    results.filteredText = results.matchedLines.join("\n");
-    results.matchCount = results.matchedLines.length;
-
-    return results;
-  };
-
-  // Enhanced image preprocessing for better text recognition
-  const preprocessImage = async (imageInput) => {
-    return new Promise((resolve, reject) => {
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      const img = new Image();
-
-      img.onload = () => {
-        try {
-          // Scale up for better recognition
-          const scale = 3;
-          canvas.width = img.width * scale;
-          canvas.height = img.height * scale;
-
-          ctx.imageSmoothingEnabled = false;
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-          // Get image data for processing
-          const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          const data = imgData.data;
-
-          // Multi-strategy preprocessing
-          for (let i = 0; i < data.length; i += 4) {
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-            const gray = (r + g + b) / 3;
-
-            // Enhanced contrast and brightness
-            let newR, newG, newB;
-
-            // Detect LCD/LED displays (green/blue dominant)
-            if ((g > r && g > b && g > 100) || (b > r && b > g && b > 100)) {
-              // High contrast for display text
-              newR = newG = newB = gray > 128 ? 255 : 0;
-            } else {
-              // Standard text enhancement
-              const contrast = 1.5;
-              const brightness = 20;
-              newR = Math.min(
-                255,
-                Math.max(0, (r - 128) * contrast + 128 + brightness)
-              );
-              newG = Math.min(
-                255,
-                Math.max(0, (g - 128) * contrast + 128 + brightness)
-              );
-              newB = Math.min(
-                255,
-                Math.max(0, (b - 128) * contrast + 128 + brightness)
-              );
-            }
-
-            data[i] = newR;
-            data[i + 1] = newG;
-            data[i + 2] = newB;
-          }
-
-          ctx.putImageData(imgData, 0, 0);
-          resolve(canvas.toDataURL("image/png"));
-        } catch (error) {
-          console.error("[v0] Preprocessing error:", error);
-          reject(error);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = (y * width + x) * 4;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        brightness += gray;
+        if (gray > 240) glarePixels++;
+        if (x < width - 1) {
+          const idx2 = (y * width + (x + 1)) * 4;
+          const r2 = data[idx2];
+          const g2 = data[idx2 + 1];
+          const b2 = data[idx2 + 2];
+          const gray2 = 0.299 * r2 + 0.587 * g2 + 0.114 * b2;
+          sharpness += Math.abs(gray - gray2);
         }
-      };
-
-      img.onerror = () => reject(new Error("Failed to load image"));
-
-      if (typeof imageInput === "string") {
-        img.src = imageInput;
-      } else if (imageInput instanceof File || imageInput instanceof Blob) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          img.src = e.target.result;
-        };
-        reader.onerror = () => reject(new Error("Failed to read file"));
-        reader.readAsDataURL(imageInput);
-      } else if (imageInput instanceof HTMLCanvasElement) {
-        img.src = imageInput.toDataURL("image/png");
-      } else if (imageInput instanceof HTMLImageElement) {
-        img.src = imageInput.src;
-      } else if (imageInput && imageInput.src) {
-        // Handle objects with src property
-        img.src = imageInput.src;
-      } else {
-        console.error(
-          "[v0] Unsupported image data type:",
-          typeof imageInput,
-          imageInput
-        );
-        reject(new Error(`Unsupported image data type: ${typeof imageInput}`));
       }
-    });
+    }
+
+    brightness = brightness / (totalPixels * 255);
+    const glare = glarePixels / totalPixels;
+    sharpness = sharpness / (totalPixels * 255);
+    return { brightness, glare, sharpness, motion: 0 };
   };
 
-  // Mock OCR function that simulates text extraction
-  const mockOCR = async () => {
-    const sampleTexts = [
-      "FR1:041.09 m3/Hr\nT1: 9598701.0 m3",
-      "Sample text from image\nLine 2 with numbers: 123.45\nEmail: test@example.com\nPhone: (555) 123-4567",
-      "Invoice #12345\nDate: 01/15/2024\nAmount: $299.99\nCustomer: John Doe",
-      "Address: 123 Main St\nCity, State 12345\nWebsite: https://example.com",
-    ];
-    return {
-      text: sampleTexts[0],
-      confidence: 85,
-    };
-  };
-
-  const recognize = async (imageData, filterOptions = {}) => {
+  const recognize = async (canvas, filterOptions = {}) => {
     try {
       setIsProcessing(true);
-      setProgress(20);
+      setProgress(10);
 
-      console.log("[v0] Starting comprehensive text extraction");
+      const quality = assessQuality(canvas);
+      if (quality.sharpness < 0.1) {
+        throw new Error("Image is too blurry. Hold your phone steady and refocus.");
+      }
+      if (quality.brightness < 0.2) {
+        throw new Error("Image is too dark. Increase lighting or move closer.");
+      }
+      if (quality.glare > 0.4) {
+        throw new Error("Excessive glare detected. Change the angle to avoid reflections.");
+      }
 
-      // Preprocess image
-      const processedImage = await preprocessImage(imageData);
-      setProgress(40);
+      const imageData = canvas.toDataURL("image/png");
 
-      // For now, use mock OCR - in production, call a real OCR service here
-      const ocrResult = await mockOCR();
-      setProgress(70);
-
-      console.log("[v0] OCR result:", {
-        text: ocrResult.text,
-        confidence: ocrResult.confidence,
+      const worker = new Worker(new URL("../workers/ocrWorker.js", import.meta.url), {
+        type: "module",
       });
 
-      // Apply comprehensive text filtering
-      const filteredResult = filterText(ocrResult.text, filterOptions);
-      setProgress(100);
+      const id = Date.now();
+      const ocrPromise = new Promise((resolve, reject) => {
+        const handleMessage = (e) => {
+          const msg = e.data;
+          if (msg.type === "progress") {
+            setProgress(msg.progress);
+          } else if (msg.type === "result" && msg.id === id) {
+            worker.removeEventListener("message", handleMessage);
+            resolve(msg.result);
+          } else if (msg.type === "error") {
+            worker.removeEventListener("message", handleMessage);
+            reject(new Error(msg.error));
+          }
+        };
+        worker.addEventListener("message", handleMessage);
+        worker.postMessage({ type: "recognize", imageData, options: {}, id });
+      });
+
+      const result = await ocrPromise;
+      worker.postMessage({ type: "terminate" });
+
+      const perDigit = result.perDigit || [];
+      let reading = perDigit.map((d) => d.char).join("");
+      // Collapse multiple decimals to one
+      const firstDecimal = reading.indexOf(".");
+      if (firstDecimal !== -1) {
+        reading =
+          reading.slice(0, firstDecimal + 1) +
+          reading.slice(firstDecimal + 1).replace(/\./g, "");
+      }
+      reading = reading.replace(/[^0-9.]/g, "");
+      if (!/^\d+(?:\.\d+)?$/.test(reading)) {
+        reading = "";
+      }
+      const decimalPlaces = reading.includes(".")
+        ? reading.split(".")[1].length
+        : 0;
+      const overallConf =
+        perDigit.length > 0
+          ? perDigit.reduce((s, d) => s + d.confidence, 0) / perDigit.length
+          : 0;
+
+      const roiBox = perDigit.reduce(
+        (acc, d) => ({
+          x0: Math.min(acc.x0, d.bbox.x0),
+          y0: Math.min(acc.y0, d.bbox.y0),
+          x1: Math.max(acc.x1, d.bbox.x1),
+          y1: Math.max(acc.y1, d.bbox.y1),
+        }),
+        { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity }
+      );
+      const finalRoi = perDigit.length ? roiBox : null;
+
+      const filteredResult = filterTextInternal(result.rawText || "", filterOptions);
 
       return {
-        ...ocrResult,
+        rawText: result.rawText || "",
+        reading,
+        decimalPlaces,
+        confidence: overallConf,
+        perDigit,
+        roiBox: finalRoi,
+        quality,
         ...filteredResult,
-        processedImage,
+        framesUsed: 1,
+        timestamp: new Date().toISOString(),
+        deviceId: typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
       };
     } catch (error) {
       console.error("[v0] Text extraction failed:", error);
@@ -354,10 +260,7 @@ export function useOcr() {
     }
   };
 
-  return {
-    recognize,
-    filterText,
-    isProcessing,
-    progress,
-  };
+  return { recognize, filterText, isProcessing, progress };
 }
+
+export { filterTextInternal as filterText };

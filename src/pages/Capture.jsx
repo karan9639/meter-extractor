@@ -4,7 +4,6 @@ import { useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useScanStore } from "../state/scanStore.jsx"
 import { useOcr } from "../hooks/useOcr.js"
-import { extractFR1 } from "../lib/extract.js"
 import { preprocessImage } from "../lib/image.js"
 import CameraView from "../components/CameraView.jsx"
 import Toolbar from "../components/Toolbar.jsx"
@@ -60,9 +59,12 @@ export default function Capture() {
         URL.revokeObjectURL(img.src)
       }
 
-      const ocrResult = await recognize(canvas, extractionMode === "comprehensive" ? filterOptions : {})
+      const ocrResult = await recognize(
+        canvas,
+        extractionMode === "comprehensive" ? filterOptions : {},
+      )
 
-      console.log("[v0] OCR extracted text:", ocrResult.text)
+      console.log("[v0] OCR extracted text:", ocrResult.rawText)
       console.log("[v0] OCR confidence:", ocrResult.confidence)
 
       if (extractionMode === "comprehensive") {
@@ -71,29 +73,27 @@ export default function Capture() {
         return
       }
 
-      // Original meter-specific processing
-      const { text, filteredText, matchedLines, totalLines, confidence } = ocrResult
+      // Meter-specific processing using numeric reading
+      const { reading, rawText, confidence, perDigit, roiBox, quality } = ocrResult
 
-      // Extract FR1 value from filtered text first, fallback to original
-      const extracted = extractFR1(filteredText) || extractFR1(text)
-
-      if (!extracted) {
+      if (!reading) {
         throw new Error(
-          `Could not find FR1 value in the image. OCR detected: "${text}". Filtered: "${filteredText}". Please ensure the meter display is clearly visible and try again.`,
+          `Could not extract meter reading. OCR detected: "${rawText}". Please ensure the meter display is clearly visible and try again.`,
         )
       }
 
-      // Add scan to store with filtering info
+      // Add scan to store with reading info
       dispatch({
         type: "ADD_SCAN",
         payload: {
-          raw: extracted.raw,
-          normalized: extracted.normalized,
-          ocrText: text,
-          filteredText,
-          matchedLines: matchedLines?.length || 0,
-          totalLines,
+          raw: reading,
+          normalized: reading,
+          ocrText: rawText,
           previewDataUrl,
+          confidence,
+          perDigit,
+          roiBox,
+          quality,
         },
       })
 
@@ -126,17 +126,17 @@ export default function Capture() {
 
   const handleTestSubmit = async (testText) => {
     try {
-      const extracted = extractFR1(testText)
+      const match = testText.match(/\d+(?:\.\d+)?/)
 
-      if (!extracted) {
-        throw new Error("Could not find FR1 value in test text.")
+      if (!match) {
+        throw new Error("Could not find numeric value in test text.")
       }
 
       dispatch({
         type: "ADD_SCAN",
         payload: {
-          raw: extracted.raw,
-          normalized: extracted.normalized,
+          raw: match[0],
+          normalized: match[0],
           ocrText: testText,
           previewDataUrl: null,
         },

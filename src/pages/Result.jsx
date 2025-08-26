@@ -80,6 +80,14 @@ export default function Result() {
               <span className="text-gray-600">Timestamp:</span>
               <span className="font-mono">{formatTimestamp(currentScan.timestamp)}</span>
             </div>
+            {currentScan.confidence !== undefined && (
+              <div className="flex justify-between">
+                <span className="text-gray-600">Confidence:</span>
+                <span className="font-mono">
+                  {(currentScan.confidence * 100).toFixed(1)}%
+                </span>
+              </div>
+            )}
             {currentScan.previewDataUrl && (
               <div className="mt-3">
                 <span className="text-gray-600 block mb-2">Captured Image:</span>

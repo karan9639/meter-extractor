@@ -30,6 +30,10 @@ function scanReducer(state, action) {
         timestamp: new Date().toISOString(),
         ocrText: action.payload.ocrText,
         previewDataUrl: action.payload.previewDataUrl,
+        confidence: action.payload.confidence,
+        perDigit: action.payload.perDigit,
+        roiBox: action.payload.roiBox,
+        quality: action.payload.quality,
       }
 
       const updatedScans = [newScan, ...state.scans].slice(0, MAX_SCANS)
